@@ -1,0 +1,5 @@
+requests
+pandas
+pycoingecko
+python-decouple
+requests
