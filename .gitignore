@@ -46,7 +46,4 @@ htmlcov/
 .env
 *.env
 
-# Other
-*.sqlite3
-*.db
-*.migrations/
+
