@@ -71,7 +71,7 @@ class APIClient:
         """Fetch token accounts for a given wallet address."""
         params = [
             wallet_address,
-            {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},  # Solana Token Program ID
+            {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},  
             {"encoding": "jsonParsed"}
         ]
         result = self.post_request("getTokenAccountsByOwner", params)

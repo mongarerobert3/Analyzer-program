@@ -92,28 +92,28 @@ class TransactionFetcher:
         return all_transactions
     
     def process_transactions(self, wallet_address, timeframe='overall'):
-        """
-        Process and filter the fetched transactions for a wallet address.
-
-        Parameters:
-            wallet_address (str): The wallet address to fetch and process transactions for.
-            timeframe (str): The timeframe filter ('1', '3', '6', '12', or 'overall').
-
-        Returns:
-            list: Processed and filtered transactions.
-        """
         logging.info(f"Processing transactions for wallet address: {wallet_address}")
-        transactions = self.fetch_transaction_history(wallet_address)
+        transaction_signatures = self.fetch_transaction_history(wallet_address)  # Get signatures
 
-        # Filter transactions based on type (buy/sell)
-        filtered_transactions = self.processor.filter_transactions(transactions)
+        if not transaction_signatures:  # Handle no transactions case
+            logging.info(f"No transactions found for {wallet_address}.")
+            return []
 
-        # Process each transaction
         processed_transactions = []
-        for tx in filtered_transactions:
-            processed_tx = self.processor.process_transaction(tx)
-            if processed_tx and self.processor.is_within_timeframe(processed_tx.get("timestamp"), timeframe):
-                processed_transactions.append(processed_tx)
+        for tx_signature_data in transaction_signatures: # Iterate over transaction signatures
+            tx_signature = tx_signature_data.get("signature") # Extract signature safely
+            if not tx_signature:
+                logging.warning("Transaction signature missing in fetched data.")
+                continue
+
+            tx_details = self.fetch_transaction_details(tx_signature) # Fetch details for each transaction signature
+
+            if tx_details:  # Only process if details were successfully fetched
+                processed_tx = self.processor.process_transaction(tx_details, [wallet_address]) # Pass wallet_address for now
+                if processed_tx and self.processor.is_within_timeframe(processed_tx.timestamp, timeframe):
+                    processed_transactions.append(processed_tx)
+            else:
+                logging.warning(f"Could not fetch details for transaction: {tx_signature}")
 
         logging.info(f"Processed {len(processed_transactions)} valid transactions for {wallet_address}.")
         return processed_transactions

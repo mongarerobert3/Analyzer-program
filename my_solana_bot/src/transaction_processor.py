@@ -1,7 +1,8 @@
-import base64
 from datetime import datetime
+import json
 import logging
-from collections import namedtuple  # Import namedtuple
+from collections import namedtuple
+import base64
 from decouple import config
 
 # Define Transaction namedtuple (outside the class)
@@ -32,152 +33,86 @@ class TransactionProcessor:
             logging.error(f"Error filtering transactions: {e}")
             return []
 
-    def process_transaction(self, transaction_details, account_keys):  
-        """
-        Processes a single transaction, calculating important details like value, type, and fees.
-
-        Parameters:
-            transaction (dict): The transaction dictionary to process.
-
-        Returns:
-            dict: A dictionary with processed transaction data, including transaction type, amount, fees, and tokens.
-        """
-        try:
+    def process_transaction(self, transaction_details, account_keys):
             signature = transaction_details.get("transaction", {}).get("signatures", [None])[0]
-            if not signature:
-                logging.warning("Transaction details missing signature.")
-                return None
+            timestamp = transaction_details.get("blockTime", 0)
 
-            processed_tx = {"id": signature}  # Start with the signature
+            fee = transaction_details.get("meta", {}).get("fee", 0)
 
-            timestamp = transaction_details.get('blockTime')
-            if timestamp:
-                processed_tx["timestamp"] = timestamp
-
-            # Process instructions (using account_keys)
             instructions = transaction_details.get("transaction", {}).get("message", {}).get("instructions", [])
+            transaction_type = None
+            amount = 0
+            token = "SOL"  # Default token is SOL
+
             for instruction in instructions:
                 program_id_index = instruction.get("programIdIndex")
                 if program_id_index is None:
                     continue
 
-                program_id = transaction_details["transaction"]["message"]["accountKeys"][program_id_index]
+                program_id = account_keys[program_id_index]
                 instruction_data = instruction.get("data")
 
-                decoded_data = self.decode_instruction(instruction_data, str(program_id))
+                decoded_data = self.decode_instruction(instruction_data, str(program_id))  # Pass program_id as string
                 if decoded_data:
-                    processed_tx.update(decoded_data)
+                    transaction_type = decoded_data.get("type")
+                    amount = decoded_data.get("amount", 0)
+                    token = decoded_data.get("token", "SOL")
+                    break  # Stop after processing the first relevant instruction (for now)
 
-                    # Improved Buy/Sell Logic (using account_keys)
-                    if decoded_data.get("type") == "transfer":
-                        if decoded_data.get("token") == "SOL":
-                            if any(account in account_keys for account in decoded_data.get("destination", [])):
-                                processed_tx["type"] = "buy"
-                            elif any(account in account_keys for account in decoded_data.get("source", [])):
-                                processed_tx["type"] = "sell"
+            net_amount = amount - fee
 
-            # Extract fee (if available)
-            fee = transaction_details.get("meta", {}).get("fee", 0)
-            processed_tx["fee"] = fee
-
-            # Calculate net amount (after decoding)
-            amount = processed_tx.get("amount", 0)
-            processed_tx["net_amount"] = amount - fee
-
-            logging.info(f"Processed transaction {signature}: {processed_tx}")
-            return Transaction(signature=signature, timestamp=timestamp, type=processed_tx.get("type"), 
-                               amount=amount, token=processed_tx.get("token"), price=processed_tx.get("price"),
-                               fee=fee, net_amount=processed_tx["net_amount"])  # Return a Transaction namedtuple
-
-        except Exception as e:
-            logging.error(f"Error processing transaction: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+            logging.info(f"Processed transaction {signature}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
+            return Transaction(signature=signature, timestamp=timestamp, type=transaction_type, 
+                            amount=amount, token=token, price=0, fee=fee, net_amount=net_amount)
 
     def decode_instruction(self, instruction_data, program_id):
         try:
             if not instruction_data:
+                logging.info("Instruction data is empty or None.")
                 return None
 
-            decoded_data = {}  # Initialize an empty dictionary
+                logging.info(f"Base64 Instruction Data: {instruction_data}")  # Print the base64 data
 
-            # 1. Decode the instruction data from base64
             try:
-                # Ensure proper base64 decoding by handling padding
-                padding = len(instruction_data) % 4
-                if padding != 0:
-                    instruction_data += "=" * (4 - padding)  # Add necessary padding
                 data = base64.b64decode(instruction_data)
+                logging.info(f"Decoded Instruction Data (hex): {data.hex()}")  
+
             except Exception as e:
                 logging.error(f"Error decoding base64 instruction data: {e}")
                 return None
 
-            # 2. Handle different program IDs (replace with your actual program IDs)
-            if str(program_id) == config("TOKEN_PROGRAM_ID"):
-                decoded_data = self._decode_token_instruction(data)
-            else:
-                logging.debug(f"Unknown program ID: {program_id}")
-                return None
+            decoded_data = {}
 
-            return decoded_data
+            # Example: Decode transfer instructions for the Token program
+            if str(program_id) == config("TOKEN_PROGRAM_ID"):  # Compare as strings
+                if len(data) >= 9:  # At least instruction type + amount
+                    instruction_type = data[0]
+                    amount = int.from_bytes(data[1:9], byteorder='little') / 10**9
+
+                    if instruction_type == 3:  # Transfer instruction
+                        return {"type": "transfer", "amount": amount, "token": "SOL"}  # Or get the actual token symbol
+                    
+            return None  # Return None if the program is not handled or instruction is unknown
 
         except Exception as e:
             logging.error(f"Error decoding instruction: {e} for program {program_id}")
             import traceback
             traceback.print_exc()
             return None
-        
-    def _decode_token_instruction(self, data):
-        try:
-            # Token Instruction Layout (Example: Adapt to your version)
-            # Common instruction types include:
-            # - 1: Initialize Account
-            # - 2: Transfer
-            # - 3: Approve
-            # You can add others depending on the token program version.
-            
-            # First byte is the instruction type (based on the Solana Token Program)
-            instruction_type = data[0]
-            
-            # Decode based on the instruction type
-            if instruction_type == 3:  # Transfer Instruction
-                # Assuming the layout: [instruction_type (1 byte), amount (8 bytes), destination (32 bytes)]
-                amount = int.from_bytes(data[1:9], byteorder='little')  # Decode amount (8 bytes)
-                destination = data[9:41].decode('utf-8')  # Decode destination address (32 bytes)
-                return {"type": "transfer", "amount": amount, "destination": destination, "token": "SOL"}  
-            
-            elif instruction_type == 2:  # Approve Instruction
-                # Assuming the layout: [instruction_type (1 byte), amount (8 bytes), delegate (32 bytes)]
-                amount = int.from_bytes(data[1:9], byteorder='little')  # Decode amount (8 bytes)
-                delegate = data[9:41].decode('utf-8')  # Decode delegate address (32 bytes)
-                return {"type": "approve", "amount": amount, "delegate": delegate, "token": "SOL"} 
 
-            elif instruction_type == 1:  # Initialize Account Instruction
-                # Example layout: [instruction_type (1 byte), owner (32 bytes)]
-                owner = data[1:33].decode('utf-8')  # Decode the owner address (32 bytes)
-                return {"type": "initialize_account", "owner": owner, "token": "SOL"} 
 
-            else:
-                logging.debug(f"Unknown instruction type: {instruction_type}")
-                return {"type": "unknown_token_instruction"}
-
-        except Exception as e:
-            logging.error(f"Error decoding token instruction: {e}")
-            return None
-        
     @staticmethod
     def is_buy_transaction(transaction):
         """
         Checks if the transaction is of type 'buy'.
         
         Parameters:
-            transaction (dict): The transaction dictionary to check.
+            transaction (Transaction): The transaction namedtuple to check.
 
         Returns:
             bool: True if the transaction type is 'buy', False otherwise.
         """
-        return transaction.type == "buy"  # Access namedtuple attribute
+        return transaction.type == "buy"
 
     @staticmethod
     def is_sell_transaction(transaction):
@@ -185,12 +120,12 @@ class TransactionProcessor:
         Checks if the transaction is of type 'sell'.
         
         Parameters:
-            transaction (dict): The transaction dictionary to check.
+            transaction (Transaction): The transaction namedtuple to check.
 
         Returns:
             bool: True if the transaction type is 'sell', False otherwise.
         """
-        return transaction.type == "sell"  # Access namedtuple attribute
+        return transaction.type == "sell"
 
     @staticmethod
     def is_within_timeframe(tx_timestamp, timeframe):

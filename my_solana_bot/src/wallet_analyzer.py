@@ -60,7 +60,7 @@ class WalletAnalyzer:
             processed_tx = self.processor.process_transaction(details, account_keys)
             if processed_tx:
                 processed_transactions.append(processed_tx)
-
+            
         total_pnl = 0
         realized_pnl = 0
         unrealized_pnl = 0

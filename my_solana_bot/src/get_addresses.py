@@ -1,64 +1,77 @@
 import csv
-import os
-from bs4 import BeautifulSoup
+import re
+import time
 from decouple import config
-import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
 
 # Get URL from environment variable
-html_url = config("HTML_URL")  
+html_url = config("HTML_URL")
 
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'DNT': '1',  
-    'Connection': 'keep-alive',
-    'Referer': 'https://dexcheck.ai/',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'same-origin',
-}
+# Set up Selenium WebDriver options
+options = webdriver.ChromeOptions()
+options.add_argument("--headless")  # Run in headless mode (no GUI)
+options.add_argument("--disable-gpu")  # Disable GPU acceleration (often helpful in headless mode)
+options.add_argument("--no-sandbox")  # Bypass OS security restrictions (sometimes needed in headless mode)
+options.add_argument("--disable-dev-shm-usage")  # Overcome limited resource problems
 
-# Fetch HTML content from URL
+# Initialize WebDriver
+driver = webdriver.Chrome(options=options)
+
+# Regular expression for Solana base58 addresses
+address_regex = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{44}$")
+
 try:
-    response = requests.get(html_url, headers=headers)
-    response.raise_for_status()  # Check for HTTP errors
-    html_content = response.text
+    driver.get(html_url)  # Load the page
+
+    # Wait for the elements to load (adjust timeout as needed)
+    wait = WebDriverWait(driver, 20)
+
+    # The CORRECT and TESTED selector using XPath:
+    elements = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//a[contains(@href, '/chart/')]")))
+
+    # Find the elements again after waiting (good practice)
+    elements = driver.find_elements(By.XPATH, "//a[contains(@href, '/chart/')]")
+
+    wallet_addresses = set()
+
+    for _ in range(3):  # Retry loop for stale elements
+        try:
+            for element in elements:
+                href = element.get_attribute("href")
+                if href:
+                    parts = href.split("/")
+                    try:
+                        chart_index = parts.index("chart")  # Or whatever identifies the address
+                        if chart_index + 1 < len(parts):
+                            wallet_address = parts[chart_index + 1]
+                            if address_regex.match(wallet_address):
+                                wallet_addresses.add(wallet_address)
+                    except ValueError:
+                        pass  # "chart" not found, skip
+            break  # Exit the retry loop if successful
+        except StaleElementReferenceException:
+            print("Stale element. Retrying...")
+            time.sleep(1)
+    else:
+        print("Could not retrieve elements after multiple retries (Stale Element Reference).")
+
+    # Save to CSV
+    csv_filename = "solana_wallets.csv"
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csvfile:  # Added encoding for special characters
+        writer = csv.writer(csvfile)
+        writer.writerow(["Wallet Address"])
+        writer.writerows([[address] for address in wallet_addresses])
+
+    print(f"Extracted {len(wallet_addresses)} unique wallet addresses. Saved to {csv_filename}")
+
 except Exception as e:
-    print(f"Error fetching URL: {e}")
-    exit()
+    print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()  # Print the full traceback for debugging
 
-# Parse HTML
-soup = BeautifulSoup(html_content, "html.parser")
-
-# Extract wallet addresses
-wallet_addresses = []
-for a in soup.find_all("a", href=True):
-    href = a["href"]
-    # Split the URL path and look for the chart segment
-    parts = href.split("/")
-    
-    # Find the position of 'chart' in the path
-    try:
-        chart_index = parts.index("chart")
-        if chart_index + 1 < len(parts):
-            wallet_address = parts[chart_index + 1]
-            # Better Solana address validation (base58 characters)
-            if len(wallet_address) == 44 and all(c in '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz' for c in wallet_address):
-                wallet_addresses.append(wallet_address)
-    except ValueError:
-        continue  # 'chart' not found in this URL
-
-# Remove duplicates while preserving order
-seen = set()
-wallet_addresses = [x for x in wallet_addresses if not (x in seen or seen.add(x))]
-
-# Save to CSV
-csv_filename = "solana_wallets.csv"
-with open(csv_filename, "w", newline="") as csvfile:
-    writer = csv.writer(csvfile)
-    writer.writerow(["Wallet Address"])
-    writer.writerows([[address] for address in wallet_addresses])
-
-print(f"Extracted {len(wallet_addresses)} unique wallet addresses. Saved to {csv_filename}")
+finally:
+    driver.quit()  # Ensure driver quits even if there's an error
