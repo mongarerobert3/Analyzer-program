@@ -37,6 +37,7 @@ class WalletAnalyzer:
 
         logging.info(f"Fetching transactions for wallet {wallet_address}...")
         transactions = self.fetcher.fetch_transaction_history(wallet_address)
+
         if not transactions:
             logging.info(f"No transactions found for wallet: {wallet_address}")
             return {
@@ -48,6 +49,18 @@ class WalletAnalyzer:
                 "buy_sell_dates": []
             }
 
+        processed_transactions = []
+        for tx in transactions:
+            details = self.fetcher.fetch_transaction_details(tx['signature'])
+            if not details:
+                logging.warning(f"Error fetching details for transaction {tx['signature']}.")
+                continue
+
+            account_keys = details.get("transaction", {}).get("message", {}).get("accountKeys", [])
+            processed_tx = self.processor.process_transaction(details, account_keys)
+            if processed_tx:
+                processed_transactions.append(processed_tx)
+
         total_pnl = 0
         realized_pnl = 0
         unrealized_pnl = 0
@@ -57,54 +70,35 @@ class WalletAnalyzer:
 
         bought_assets = {}
 
-        for tx in transactions:
-            if tx.get("err") is not None:
-                logging.warning(f"Skipping transaction {tx['signature']} due to errors.")
+        for transaction in processed_transactions:  # Iterate through *processed* transactions
+            if not transaction:  # Check if the transaction is valid
                 continue
 
-            logging.info(f"Fetching details for transaction {tx['signature']}...")
-            details = self.fetcher.fetch_transaction_details(tx['signature'])
-            if not details:
-                logging.warning(f"Error fetching details for transaction {tx['signature']}.")
-                continue
-
-            timestamp = details.get('blockTime')
-            if not timestamp:
-                logging.warning(f"Skipping transaction {tx['signature']} due to missing timestamp.")
-                continue
-
-            transaction_datetime = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-
-            # Skip pre-timeframe transactions
-            if not self.processor.is_within_timeframe(timestamp, timeframe):
-                logging.info(f"Skipping transaction {tx['signature']} outside of timeframe.")
-                continue
-
-            is_buy = self.processor.is_buy_transaction(details)  # Check if it's a buy
-            is_sell = self.processor.is_sell_transaction(details)  # Check if it's a sell
-
-            # Handle buy transactions
-            if is_buy:
-                amount = details.get("amount", 0)
-                price = self.price_fetcher.get_sol_to_usd_price()  # Fetch current price of SOL
+            if transaction.type == "buy":
+                amount = transaction.amount
+                price = self.price_fetcher.get_sol_to_usd_price()
+                if price == 0:  # Handle price fetching errors
+                    logging.warning("Failed to fetch SOL price. Skipping buy transaction.")
+                    continue
                 unrealized_pnl -= amount * price
-                bought_assets[details["token_id"]] = {"price": price, "amount": amount, "timestamp": timestamp}
-                buy_sell_dates.append({'transaction': 'buy', 'datetime': transaction_datetime})
+                bought_assets[transaction.token] = {"price": price, "amount": amount, "timestamp": transaction.timestamp}
+                buy_sell_dates.append({'transaction': 'buy', 'datetime': datetime.fromtimestamp(transaction.timestamp).strftime('%Y-%m-%d %H:%M:%S')})
 
-            # Handle sell transactions
-            elif is_sell:
-                amount = details.get("amount", 0)
-                price = self.price_fetcher.get_sol_to_usd_price()  # Fetch current price of SOL
+            elif transaction.type == "sell":
+                amount = transaction.amount
+                price = self.price_fetcher.get_sol_to_usd_price()
+                if price == 0:  # Handle price fetching errors
+                    logging.warning("Failed to fetch SOL price. Skipping sell transaction.")
+                    continue
                 realized_pnl += amount * price
-                profitable_trades += 1 if amount * price > 0 else 0
-                buy_sell_dates.append({'transaction': 'sell', 'datetime': transaction_datetime})
+                profitable_trades += 1 if amount * price > bought_assets.get(transaction.token, {}).get("price", 0) else 0 #Check if bought assets price is greater than zero
+                buy_sell_dates.append({'transaction': 'sell', 'datetime': datetime.fromtimestamp(transaction.timestamp).strftime('%Y-%m-%d %H:%M:%S')})
 
             total_trades += 1
 
         total_pnl = realized_pnl + unrealized_pnl
         win_rate = (profitable_trades / total_trades) * 100 if total_trades > 0 else 0
 
-        # Exclude based on win rate and total PNL criteria
         if win_rate < minimum_win_rate or total_pnl < minimum_total_pnl:
             logging.info(f"Wallet {wallet_address} excluded due to low win rate or PNL.")
             return None
@@ -127,7 +121,7 @@ class WalletAnalyzer:
                 "minimum_avg_holding_period": minimum_avg_holding_period,
                 "minimum_win_rate": minimum_win_rate,
                 "minimum_total_pnl": minimum_total_pnl
-            }  # Store the settings used for analysis
+            }
         }
 
     def check_wallet_capital(self, address, minimum_capital_usd):
