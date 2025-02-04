@@ -23,8 +23,8 @@ class Bot:
         return []
 
     def run(self, csv_filename='addresses.csv', timeframe='1',
-            minimum_wallet_capital=1000, minimum_avg_holding_period=0,
-            minimum_win_rate=0, minimum_total_pnl=0, export_filename='results.csv'):
+            minimum_wallet_capital=1000, minimum_avg_holding_period=60,
+            minimum_win_rate=50, minimum_total_pnl=100, export_filename='results.csv'):
         """Main function to execute wallet analysis."""
         print("Starting wallet analysis...")
         wallet_addresses = self.load_wallet_addresses_from_csv(csv_filename)

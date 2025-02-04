@@ -34,72 +34,101 @@ class TransactionProcessor:
             return []
 
     def process_transaction(self, transaction_details, account_keys):
-            signature = transaction_details.get("transaction", {}).get("signatures", [None])[0]
-            timestamp = transaction_details.get("blockTime", 0)
+        signature = transaction_details.get("transaction", {}).get("signatures", [None])[0]
+        timestamp = transaction_details.get("blockTime", 0)
 
-            fee = transaction_details.get("meta", {}).get("fee", 0)
+        fee = transaction_details.get("meta", {}).get("fee", 0)
 
-            instructions = transaction_details.get("transaction", {}).get("message", {}).get("instructions", [])
-            transaction_type = None
-            amount = 0
-            token = "SOL"  # Default token is SOL
+        instructions = transaction_details.get("transaction", {}).get("message", {}).get("instructions", [])
+        transaction_type = None
+        amount = 0
+        token = "SOL"  # Default token is SOL
 
-            for instruction in instructions:
-                program_id_index = instruction.get("programIdIndex")
-                if program_id_index is None:
-                    continue
+        for instruction in instructions:
+            program_id_index = instruction.get("programIdIndex")
+            if program_id_index is None:
+                continue
 
-                program_id = account_keys[program_id_index]
-                instruction_data = instruction.get("data")
+            program_id = account_keys[program_id_index]
+            instruction_data = instruction.get("data")
 
-                decoded_data = self.decode_instruction(instruction_data, str(program_id))  # Pass program_id as string
-                if decoded_data:
-                    transaction_type = decoded_data.get("type")
-                    amount = decoded_data.get("amount", 0)
-                    token = decoded_data.get("token", "SOL")
-                    break  # Stop after processing the first relevant instruction (for now)
+            decoded_data = self.decode_instruction(instruction_data, str(program_id))  # Pass program_id as string
+            if decoded_data:
+                transaction_type = decoded_data.get("type")
+                amount = decoded_data.get("amount", 0)
+                token = decoded_data.get("token", "SOL")
+                break  # Stop after processing the first relevant instruction (for now)
 
-            net_amount = amount - fee
+        net_amount = amount - fee
 
-            logging.info(f"Processed transaction {signature}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
-            return Transaction(signature=signature, timestamp=timestamp, type=transaction_type, 
-                            amount=amount, token=token, price=0, fee=fee, net_amount=net_amount)
+        logging.info(f"Processed transaction {signature}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
+        return Transaction(signature=signature, timestamp=timestamp, type=transaction_type, 
+                        amount=amount, token=token, price=0, fee=fee, net_amount=net_amount)
 
-    def decode_instruction(self, instruction_data, program_id):
+    def decode_instruction(self, instruction_data, program_id, account_keys):
+        """
+        Decodes the instruction data to extract transaction details.
+        Parameters:
+            instruction_data (str): Base64-encoded instruction data.
+            program_id (str): The program ID associated with the instruction.
+            account_keys (list): List of account keys for the transaction.
+        Returns:
+            dict: A dictionary containing decoded transaction details.
+        """
         try:
             if not instruction_data:
                 logging.info("Instruction data is empty or None.")
                 return None
 
-                logging.info(f"Base64 Instruction Data: {instruction_data}")  # Print the base64 data
-
+            # Decode base64 data
             try:
                 data = base64.b64decode(instruction_data)
-                logging.info(f"Decoded Instruction Data (hex): {data.hex()}")  
-
+                logging.info(f"Decoded Instruction Data (hex): {data.hex()}")
             except Exception as e:
                 logging.error(f"Error decoding base64 instruction data: {e}")
                 return None
 
             decoded_data = {}
 
-            # Example: Decode transfer instructions for the Token program
-            if str(program_id) == config("TOKEN_PROGRAM_ID"):  # Compare as strings
+            # Handle Token Program instructions
+            if program_id == config("TOKEN_PROGRAM_ID"):  
                 if len(data) >= 9:  # At least instruction type + amount
                     instruction_type = data[0]
-                    amount = int.from_bytes(data[1:9], byteorder='little') / 10**9
+                    amount = int.from_bytes(data[1:9], byteorder='little') / 10**9  # Convert lamports to SOL
 
                     if instruction_type == 3:  # Transfer instruction
-                        return {"type": "transfer", "amount": amount, "token": "SOL"}  # Or get the actual token symbol
-                    
-            return None  # Return None if the program is not handled or instruction is unknown
+                        token_account_index = int.from_bytes(data[9:10], byteorder='little')
+                        token_account = account_keys[token_account_index] if token_account_index < len(account_keys) else "Unknown"
+                        decoded_data = {
+                            "type": "transfer",
+                            "amount": amount,
+                            "token": "SOL",  # Default token; replace with actual token detection logic
+                            "token_account": token_account
+                        }
+                    else:
+                        logging.warning(f"Unsupported instruction type {instruction_type} for Token Program.")
+            elif program_id == config("SYSTEM_PROGRAM_ID"): 
+                # Handle system-level instructions (e.g., transfers)
+                if len(data) >= 1:  # At least instruction type
+                    instruction_type = data[0]
+
+                    if instruction_type == 2:  # CreateAccount instruction
+                        decoded_data = {"type": "create_account"}
+                    elif instruction_type == 3:  # Transfer instruction
+                        amount = int.from_bytes(data[1:9], byteorder='little') / 10**9
+                        decoded_data = {"type": "transfer", "amount": amount, "token": "SOL"}
+                    else:
+                        logging.warning(f"Unsupported instruction type {instruction_type} for System Program.")
+            else:
+                logging.warning(f"Unsupported program ID: {program_id}")
+
+            return decoded_data if decoded_data else None
 
         except Exception as e:
             logging.error(f"Error decoding instruction: {e} for program {program_id}")
             import traceback
             traceback.print_exc()
             return None
-
 
     @staticmethod
     def is_buy_transaction(transaction):
