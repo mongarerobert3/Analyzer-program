@@ -88,11 +88,20 @@ class WalletAnalyzer:
 
         # Apply exclusion criteria
         if win_rate < minimum_win_rate or total_pnl < minimum_total_pnl:
-            logging.info(f"Wallet {wallet_address} excluded due to low win rate or PNL.")
+            # Determine which threshold caused the exclusion
+            reason = []
+            if win_rate < minimum_win_rate:
+                reason.append(f"win rate ({win_rate:.2f}% < {minimum_win_rate}%)")
+            if total_pnl < minimum_total_pnl:
+                reason.append(f"total PnL ({total_pnl:.2f} < {minimum_total_pnl})")
+            
+            # Log the reason for exclusion with exact thresholds
+            logging.info(f"Wallet {wallet_address} excluded due to: " + ", ".join(reason) + ".")
             return None
 
         if avg_holding_period < minimum_avg_holding_period:
-            logging.info(f"Wallet {wallet_address} excluded due to short average holding period.")
+            # Log the exact values that led to exclusion
+            logging.info(f"Wallet {wallet_address} excluded due to short average holding period ({avg_holding_period:.2f} minutes < {minimum_avg_holding_period} minutes).")
             return None
 
         return {

@@ -20,7 +20,7 @@ class TransactionFetcher:
         self.processor = TransactionProcessor()
         self.max_workers = max_workers  # Number of threads for concurrent processing
 
-    def fetch_transaction_history(self, wallet_address, max_transactions=50):
+    def fetch_transaction_history(self, wallet_address, max_transactions=2):
         """
         Fetches the transaction history for a given wallet address, limited to the last `max_transactions`.
         Parameters:
@@ -141,12 +141,14 @@ class TransactionFetcher:
         attempt = 0
         while attempt < retries:
             try:
-                result = self.client.post_request("getTransaction", [transaction_id, {"encoding": "jsonParsed"}])
+                result = self.client.post_request("getTransaction", [transaction_id, {"maxSupportedTransactionVersion": 0}])
+                logging.debug(f"Raw API response for {transaction_id}: {result}")
+
                 if not result or "result" not in result:
-                    logging.error(f"Error fetching details for transaction {transaction_id}. No result found.")
+                    logging.warning(f"Transaction {transaction_id} returned an invalid response: {result}")
                     raise ValueError("Invalid API response")
-                
-                logging.info(f"Transaction details fetched for {transaction_id}.")
+
+                logging.info(f"Successfully fetched transaction details for {transaction_id}.")
                 return result["result"]
 
             except Exception as e:
@@ -159,6 +161,7 @@ class TransactionFetcher:
                 else:
                     logging.error(f"Failed to fetch details for transaction {transaction_id} after {retries} attempts.")
                     return None
+
 
     @lru_cache(maxsize=128)
     def fetch_wallet_balance(self, address):

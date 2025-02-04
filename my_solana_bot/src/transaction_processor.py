@@ -10,6 +10,18 @@ Transaction = namedtuple("Transaction", ["signature", "timestamp", "type", "amou
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+def safe_base64_decode(data):
+    """Safely decodes a base64-encoded string, adding padding if necessary."""
+    try:
+        missing_padding = len(data) % 4
+        if missing_padding:
+            data += "=" * (4 - missing_padding)
+        return base64.b64decode(data)
+    except Exception as e:
+        logging.error(f"Error decoding base64 instruction data: {e}")
+        return None
+    
 class TransactionProcessor:
     def __init__(self):
         pass
@@ -42,7 +54,7 @@ class TransactionProcessor:
         instructions = transaction_details.get("transaction", {}).get("message", {}).get("instructions", [])
         transaction_type = None
         amount = 0
-        token = "SOL"  # Default token is SOL
+        token = "SOL" 
 
         for instruction in instructions:
             program_id_index = instruction.get("programIdIndex")
@@ -52,7 +64,7 @@ class TransactionProcessor:
             program_id = account_keys[program_id_index]
             instruction_data = instruction.get("data")
 
-            decoded_data = self.decode_instruction(instruction_data, str(program_id))  # Pass program_id as string
+            decoded_data = self.decode_instruction(instruction_data, str(program_id), account_keys)  
             if decoded_data:
                 transaction_type = decoded_data.get("type")
                 amount = decoded_data.get("amount", 0)
@@ -64,6 +76,7 @@ class TransactionProcessor:
         logging.info(f"Processed transaction {signature}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
         return Transaction(signature=signature, timestamp=timestamp, type=transaction_type, 
                         amount=amount, token=token, price=0, fee=fee, net_amount=net_amount)
+
 
     def decode_instruction(self, instruction_data, program_id, account_keys):
         """
@@ -82,7 +95,7 @@ class TransactionProcessor:
 
             # Decode base64 data
             try:
-                data = base64.b64decode(instruction_data)
+                data = safe_base64_decode(instruction_data)
                 logging.info(f"Decoded Instruction Data (hex): {data.hex()}")
             except Exception as e:
                 logging.error(f"Error decoding base64 instruction data: {e}")
@@ -115,10 +128,22 @@ class TransactionProcessor:
                     if instruction_type == 2:  # CreateAccount instruction
                         decoded_data = {"type": "create_account"}
                     elif instruction_type == 3:  # Transfer instruction
-                        amount = int.from_bytes(data[1:9], byteorder='little') / 10**9
-                        decoded_data = {"type": "transfer", "amount": amount, "token": "SOL"}
+                        if len(data) >= 9:
+                            amount = int.from_bytes(data[1:9], byteorder='little') / 10**9
+                            decoded_data = {"type": "transfer", "amount": amount, "token": "SOL"}
+                        else:
+                            logging.warning("Invalid transfer instruction format for System Program.")
                     else:
                         logging.warning(f"Unsupported instruction type {instruction_type} for System Program.")
+            # Handle Serum DEX instructions
+            elif program_id == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8":  # Serum DEX Program
+                logging.warning(f"Serum DEX program detected. Skipping instruction decoding for now.")
+                # Add decoding logic for Serum DEX instructions here
+
+            # Handle Jupiter Swap instructions
+            elif program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":  # Jupiter Swap Program
+                logging.warning(f"Jupiter Swap program detected. Skipping instruction decoding for now.")
+                # Add decoding logic for Jupiter Swap instructions here
             else:
                 logging.warning(f"Unsupported program ID: {program_id}")
 
@@ -129,6 +154,7 @@ class TransactionProcessor:
             import traceback
             traceback.print_exc()
             return None
+
 
     @staticmethod
     def is_buy_transaction(transaction):
