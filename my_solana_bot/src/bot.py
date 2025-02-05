@@ -23,9 +23,9 @@ class Bot:
             print(f"Error loading CSV file: {e}")
         return []
 
-    def run(self, csv_filename='addresses.csv', timeframe='1',
+    def run(self, csv_filename='addresses.csv', timeframe='3',
         minimum_wallet_capital=1000, minimum_avg_holding_period=60,
-        minimum_win_rate=50, minimum_total_pnl=100, export_filename='results.csv'):
+        minimum_win_rate=30, minimum_total_pnl=500, export_filename='results.csv'):
         """
         Main function to execute wallet analysis.
         Parameters:
