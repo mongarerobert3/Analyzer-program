@@ -3,6 +3,8 @@ import json
 import logging
 from collections import namedtuple
 import base64
+
+from base58 import b58decode
 from decouple import config
 
 from api_client import APIClient
@@ -10,19 +12,25 @@ from api_client import APIClient
 # Define Transaction namedtuple (outside the class)
 Transaction = namedtuple("Transaction", ["signature", "timestamp", "type", "amount", "token", "price", "fee", "net_amount"])
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def safe_base64_decode(data):
-	"""Safely decodes a base64-encoded string, adding padding if necessary."""
-	try:
-		missing_padding = len(data) % 4
-		if missing_padding:
-			data += "=" * (4 - missing_padding)
-		return base64.b64decode(data)
-	except Exception as e:
-		logging.error(f"Error decoding base64 instruction data: {e}")
-		return None
+    """Safely decodes a base64-encoded string, adding padding if necessary. Falls back to base58 if base64 fails."""
+    try:
+        missing_padding = len(data) % 4
+        if missing_padding:
+            data += "=" * (4 - missing_padding)
+
+        return base64.b64decode(data)
+    except Exception as e:
+        logging.warning(f"Base64 decoding failed, trying Base58. Error: {e}")
+
+        try:
+            return b58decode(data)
+        except Exception as e:
+            logging.error(f"Error decoding instruction data (Base64 & Base58 failed): {e}")
+            return None
 
 class TransactionProcessor:
 	def __init__(self):
@@ -57,6 +65,8 @@ class TransactionProcessor:
 		Returns:
 			Transaction: A named tuple representing the processed transaction.
 		"""
+		logging.info(f'Getting to process transaction')
+
 		# Extract basic transaction details
 		signature = transaction_details.get("transaction", {}).get("signatures", [None])[0]
 		timestamp = transaction_details.get("blockTime", 0)
@@ -76,17 +86,22 @@ class TransactionProcessor:
 			program_id_index = instruction.get("programIdIndex")
 			if program_id_index is None or program_id_index >= len(account_keys):
 				logging.warning(f"Instruction in transaction {signature} has invalid programIdIndex. Skipping.")
-				return None
+				continue
 
 			# Extract program ID and instruction data
 			program_id = account_keys[program_id_index] if program_id_index < len(account_keys) else "Unknown"
 			instruction_data = instruction.get("data")
 
-			# Log raw instruction data for debugging purposes
-			logging.debug(f"Transaction {signature} - Instruction Data: {instruction_data}, Program ID: {program_id}")
+			if not instruction_data:
+				logging.warning(f"Transaction {signature} - Missing instruction data. Skipping this instruction.")
+				continue
+
+			# Log raw instruction data 
+			logging.debug(f"Raw Transaction {signature} - Instruction Data: {instruction_data}, Program ID: {program_id}")
 
 			# Decode the instruction data
-			decoded_data = self.decode_instruction(instruction_data, str(program_id), account_keys)
+			decoded_data = self.decode_instruction(instruction_data, str(program_id), account_keys, instruction)
+			print("Here is the decoded data: ", decoded_data)
 
 			# Log the result of decoding
 			if decoded_data:
@@ -113,7 +128,7 @@ class TransactionProcessor:
 			timestamp = int(datetime.now().timestamp())
 
 		# Log final processed transaction details
-		logging.info(f"Processed transaction {signature}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
+		logging.info(f"Processed transaction {signature} at {timestamp}: type={transaction_type}, amount={amount}, token={token}, fee={fee}, net_amount={net_amount}")
 
 		# Return the processed transaction as a named tuple
 		return Transaction(
@@ -122,10 +137,11 @@ class TransactionProcessor:
 			type=transaction_type,
 			amount=amount,
 			token=token,
-			price=0,  
+			price=204.33,  
 			fee=fee,
 			net_amount=net_amount
 		)
+
 
 	def detect_token(self, token_account):
 		response = self.client.post_request("getAccountInfo", [token_account, {"encoding": "jsonParsed"}])
@@ -138,113 +154,136 @@ class TransactionProcessor:
 					mint = parsed_info.get("mint")
 					if mint:
 						token_mappings = {
-							"So11111111111111111111111111111111111111112": "SOL",
-							"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": "USDC",
-							"Es9vMFrzaCERzHkzWi8kFZrA6t5E3kJ9QH6uQKXz7b7": "USDT",
-						}
+							"So11111111111111111111111111111111111111112": "SOL",  # SOL
+							"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": "USDC",  # USDC
+							"Es9vMFrzaCERzHkzWi8kFZrA6t5E3kJ9QH6uQKXz7b7": "USDT",  # USDT
+							"8wEnkDFv5bqP1K6KeQdoVLFaHm3XukkqMFikXa1Ne4tX": "BONK",  # Bonk
+							"DLEZaNSqfSHB2RMs7yZPnMMx87igoVYGqD1xfiQXntcD": "RNDR",  # Render Token
+							"4KUTSfhh7aNmXxTgoTEYjoZ2xNM498zikEjHgCchUWmQ": "RAY",  # Raydium
+							"FSxJ85FXVsXSr51SeWf9ciJWTcRnqKFSmBgRDeL3KyWw": "SPL",  # Solana Program Library Token
+							"2wmVCSfPxGPjrnMMn7rchp4uaeoTqN39mXFC2zhPdri9": "SRM",  # Serum
+					}
 						return token_mappings.get(mint, "Unknown")
 		return "Unknown"
 
-	def decode_instruction(self, instruction_data, program_id, account_keys):
+	def decode_instruction(self, instruction_data: str, program_id: str, account_keys: list, instruction: dict = None) -> dict:
 		"""
-		Decodes the instruction data to extract transaction details.
+		Decodes instruction data for Solana transactions, aligning with token balance structures.
+
 		Parameters:
-			instruction_data (str): Base64-encoded instruction data.
-			program_id (str): The program ID associated with the instruction.
-			account_keys (list): List of account keys for the transaction.
+				instruction_data (str): Base64-encoded instruction data.
+				program_id (str): The program ID associated with the instruction.
+				account_keys (list): List of account keys for the transaction.
+				instruction (dict, optional): Additional instruction details.
+
 		Returns:
-			dict: A dictionary containing decoded transaction details.
+				dict: Decoded token balance details or an error message.
 		"""
 		try:
-			if not instruction_data:
-				logging.info("Instruction data is empty or None.")
-				return None
+				if not instruction_data:
+						logging.warning(f"Instruction data is empty for program {program_id}.")
+						return {"error": "No instruction data provided"}
 
-			# Decode base64 data
-			try:
-				data = safe_base64_decode(instruction_data)
-				logging.info(f"Decoded Instruction Data (hex): {data.hex()}")
-			except Exception as e:
-				logging.error(f"Error decoding base64 instruction data: {e}")
-				return None
+				# Attempt to decode the instruction data using Base64
+				try:
+						data = safe_base64_decode(instruction_data)
+						logging.debug(f"Decoded Instruction Data (hex): {data.hex()} (Length: {len(data)})")
+				except Exception as e:
+						logging.warning(f"Invalid base64 instruction data for program {program_id}: {e}")
+						return {"error": "Invalid base64 encoding"}
 
-			decoded_data = {}
+				decoded_data = {}
 
-			# Handle Token Program instructions
-			if program_id == config("TOKEN_PROGRAM_ID"):
-				if len(data) >= 9:
-					instruction_type = data[0]
-					amount = int.from_bytes(data[1:9], byteorder="little") / 10**9  # Convert lamports to SOL
+				# Handle Token Program instructions
+				if program_id == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
+						if len(data) < 9:
+								logging.warning(
+										f"Insufficient instruction data for Token Program (Length: {len(data)}). Expected at least 9 bytes."
+								)
+								return {"error": "Instruction data too short for Token Program", "raw_data": data.hex()}
 
-					if instruction_type == 3:  # Transfer
-						token_account_index = data[9]
-						token_account = account_keys[token_account_index] if token_account_index < len(account_keys) else "Unknown"
-						token = self.detect_token(token_account)
+						instruction_type = data[0]
+						amount_raw = int.from_bytes(data[1:9], byteorder='little')
+						decimals = 9  # Default decimals (usually 9 for SOL; may vary for other tokens)
+						amount_ui = amount_raw / (10 ** decimals)
 
-						decoded_data = {
-							"type": "transfer",
-							"amount": amount,
-							"token": token,
-							"token_account": token_account,
-						}
-					elif instruction_type == 7:  # CloseAccount
-						logging.info(f"CloseAccount instruction detected for {program_id}.")
-					else:
-						logging.warning(f"Unsupported instruction type {instruction_type} for Token Program.")
+						if instruction_type == 3:  # Transfer instruction
+								if len(data) < 10:
+										logging.warning(
+												f"Transfer instruction missing token account index (Length: {len(data)})."
+										)
+										return {"error": "Token account index missing", "raw_data": data.hex()}
 
-			# Handle System Program instructions
-			elif program_id == config("SYSTEM_PROGRAM_ID") or program_id == "11111111111111111111111111111111":
-				if len(data) >= 9:
-					instruction_type = data[0]
+								account_index = data[9]
+								accounts = instruction.get("accounts", [])
+								token_account_index = accounts[account_index] if account_index < len(accounts) else None
+								mint_address = account_keys[token_account_index] if token_account_index is not None and token_account_index < len(account_keys) else "Unknown"
+								owner_address_index = accounts[0] if accounts else None
+								owner_address = account_keys[owner_address_index] if owner_address_index is not None and owner_address_index < len(account_keys) else "Unknown"
 
-					if instruction_type == 3:  # Transfer
-						amount = int.from_bytes(data[1:9], byteorder="little") / 10**9
-						decoded_data = {"type": "transfer", "amount": amount, "token": "SOL"}
-					elif instruction_type == 2:  # CreateAccount
-						logging.info(f"CreateAccount instruction detected for {program_id}.")
-					elif instruction_type == 1:  # Assign
-						logging.info(f"Assign instruction detected for {program_id}.")
-					else:
-						logging.warning(f"Unsupported instruction type {instruction_type} for System Program.")
+								decoded_data = {
+										"accountIndex": account_index,
+										"mint": mint_address,
+										"owner": owner_address,
+										"programId": program_id,
+										"uiTokenAmount": {
+												"amount": str(amount_raw),
+												"decimals": decimals,
+												"uiAmountString": str(amount_ui)
+										}
+								}
+						else:
+								logging.warning(f"Unsupported instruction type {instruction_type} for Token Program.")
 
-			# Handle Associated Token Program
-			elif program_id == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL":
-				logging.info(f"Associated Token Program detected. Skipping instruction decoding.")
+				# Handle System Program instructions
+				elif program_id == config("SYSTEM_PROGRAM_ID") or program_id == "11111111111111111111111111111111":
+						if len(data) >= 9:
+								instruction_type = data[0]
+								if instruction_type == 3:  # Transfer
+										amount = int.from_bytes(data[1:9], byteorder="little") / 10**9
+										decoded_data = {"type": "transfer", "amount": amount, "token": "SOL"}
+								elif instruction_type == 2:  # CreateAccount
+										logging.info(f"CreateAccount instruction detected for {program_id}.")
+								elif instruction_type == 1:  # Assign
+										logging.info(f"Assign instruction detected for {program_id}.")
+								else:
+										logging.warning(f"Unsupported instruction type {instruction_type} for System Program.")
 
-			# Handle Compute Budget Program
-			elif program_id == "ComputeBudget111111111111111111111111111111":
-				if len(data) >= 4:
-					instruction_type = data[0]
-					if instruction_type == 1:  # Example instruction type
-						budget_limit = int.from_bytes(data[1:5], byteorder="little")
-						decoded_data = {"type": "set_budget", "limit": budget_limit}
-					else:
-						logging.warning(f"Unsupported instruction type {instruction_type} for Compute Budget Program.")
+				# Handle Associated Token Program
+				elif program_id == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL":
+						logging.info("Associated Token Program detected. Skipping instruction decoding.")
+
+				# Handle Compute Budget Program
+				elif program_id == "ComputeBudget111111111111111111111111111111":
+						if len(data) >= 4:
+								instruction_type = data[0]
+								if instruction_type == 1:  # Example instruction type
+										budget_limit = int.from_bytes(data[1:5], byteorder="little")
+										decoded_data = {"type": "set_budget", "limit": budget_limit}
+								else:
+										logging.warning(f"Unsupported instruction type {instruction_type} for Compute Budget Program.")
+						else:
+								logging.warning("Invalid instruction format for Compute Budget Program.")
+
+				# Handle Serum DEX Program
+				elif program_id == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8":
+						logging.info("Serum DEX program detected. Skipping instruction decoding.")
+
+				# Handle Jupiter Swap Program
+				elif program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":
+						logging.info("Jupiter Swap program detected. Skipping instruction decoding.")
+
+				# Unsupported program
 				else:
-					logging.warning("Invalid instruction format for Compute Budget Program.")
+						logging.warning(f"Unsupported program ID: {program_id}")
 
-			# Handle Serum DEX Program
-			elif program_id == "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8":
-				logging.info("Serum DEX program detected. Skipping instruction decoding.")
-
-			# Handle Jupiter Swap Program
-			elif program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":
-				logging.info("Jupiter Swap program detected. Skipping instruction decoding.")
-
-			# Handle Unknown Programs
-			else:
-				logging.warning(f"Unsupported program ID: {program_id}")
-
-			# Log detailed information about the decoded data
-			if decoded_data:
-				logging.info(f"Successfully decoded instruction for program {program_id}: {decoded_data}")
-			else:
-				logging.warning(f"No valid data decoded for program {program_id}.")
-
-			return decoded_data if decoded_data else None
+				if decoded_data:
+						logging.info(f"Successfully decoded instruction for program {program_id}: {decoded_data}")
+						return decoded_data
+				else:
+						logging.warning(f"No valid data decoded for program {program_id}.")
+						return {"error": "No valid data decoded"}
 
 		except Exception as e:
-			logging.error(f"Error decoding instruction: {e} for program {program_id}")
-			import traceback
-			traceback.print_exc()
-			return None
+				logging.error(f"Error decoding instruction for program {program_id}: {e}")
+				return {"error": "Decoding failed", "exception": str(e)}

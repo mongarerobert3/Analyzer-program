@@ -117,7 +117,7 @@ class WalletAnalyzer:
                 "minimum_win_rate": minimum_win_rate,
                 "minimum_total_pnl": minimum_total_pnl
             },
-            "trades": buy_sell_dates  # Include individual trades
+            "trades": buy_sell_dates  
         }
 
     def check_wallet_capital(self, address, minimum_capital_usd):

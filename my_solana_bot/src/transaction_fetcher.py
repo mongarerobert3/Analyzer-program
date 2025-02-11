@@ -20,7 +20,7 @@ class TransactionFetcher:
         self.processor = TransactionProcessor()
         self.max_workers = max_workers  # Number of threads for concurrent processing
 
-    def fetch_transaction_history(self, wallet_address, max_transactions=50):
+    def fetch_transaction_history(self, wallet_address, max_transactions=20):
         """
         Fetches the transaction history for a given wallet address, limited to the last `max_transactions`.
         Parameters:
